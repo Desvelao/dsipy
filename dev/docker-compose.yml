@@ -1,0 +1,10 @@
+version: "3.9"
+
+services:
+  dev:
+    image: python:3.12-alpine
+    container_name: vcard-to-opml
+    working_dir: /app/src/dsipy
+    volumes:
+      - ../:/app
+    command: tail -f /dev/null
