@@ -1,131 +1,33 @@
-import os
-import sys
-import typer
-from functools import wraps
+from datetime import datetime
 import difflib
+import os
 from pathlib import Path
-from typing import List
-from dataclasses import asdict
 from rich.progress import Progress
 from rich.syntax import Syntax
-from ..shared.vcard import (
-    VCard,
-    VCardInputs,
-)
-from ..shared.file import write_file
+import sys
+import typer
+from typing import List
+from ..shared.cli import Cli
 from ..shared.qr import generate_qr
-from datetime import datetime
 from ..shared.security import (
     action_generate_keypair,
     load_private_key_pem,
 )
+from ..shared.vcard import VCard, VCardInputs, vcard_main_attributes
 
-app = typer.Typer(
-    help="A CLI tool to generate RSS feeds from markdown files",
+app = Cli(
+    help="A CLI tool to generate RSS feeds from markdown files", no_args_is_help=True
 )
-
-
-@app.command(
-    help="Generate a QR code from the provided vCard file (support input piping) and save it to a file."
-)
-def qr(
-    input: str = typer.Argument(None, help="Data to encode in the QR code"),
-    output: str = typer.Option(None, help="Output file to save the QR code image"),
-    image: str = typer.Option(None, help="Path to an image to include in the QR code"),
-    caption_top: str = typer.Option("", help="Caption to display above the QR code"),
-    caption_bottom: str = typer.Option("", help="Caption to display below the QR code"),
-):
-    """
-    Generate a QR code from the provided data and save it to a file.
-    """
-    # Check if the input is provided via standard input (piped data)
-
-    data = None
-    if input:
-        if os.path.isfile(input):
-            with open(input, "r", encoding="utf-8") as file:
-                data = file.read().strip()
-    elif not os.isatty(0):  # Check if stdin is not a terminal
-        data = sys.stdin.read().strip()
-
-    if not data:
-        typer.secho("❌ No input data provided for the QR code.", fg=typer.colors.RED)
-        raise typer.Exit()
-
-    if image and not os.path.isfile(image):
-        typer.secho(
-            f"❌ The specified image file does not exist: {image}", fg=typer.colors.RED
-        )
-        raise typer.Exit()
-
-    if not output:
-        typer.secho(
-            "❌ Output file path is required to save the QR code image.",
-            fg=typer.colors.RED,
-        )
-        raise typer.Exit()
-
-    generate_qr(image, output, data, caption_top, caption_bottom)
-
-
-vcard_main_attributes = {
-    "fn": {"default": "", "description": "Full Name (FN)"},
-    "n": {"default": "", "description": "Name (N) in the format LastName;FirstName"},
-    "nickname": {"default": "", "description": "Nickname (NICKNAME)"},
-    "lang": {
-        "default": "en-US",
-        "description": "Language (LANG) in the format 'language-region' (e.g., 'en-US', 'es-ES')",
-    },
-    "gender": {
-        "default": "",
-        "description": "Gender (GENDER), e.g., 'M' for Male, 'F' for Female, or 'O' for Other",
-    },
-    "email": {"default": "", "description": "Email (EMAIL), e.g., 'example@mail.com'"},
-    "categories": {
-        "default": "",
-        "description": "Categories (comma-separated, CATEGORIES), e.g., 'gamer,programmer'",
-    },
-    "bday": {"default": "", "description": "Birthday (BDAY) in the format YYYY-MM-DD"},
-    "anniversary": {
-        "default": "",
-        "description": "Anniversary date (ANNIVERSARY) in the format YYYY-MM-DD",
-    },
-    "kind": {
-        "default": "individual",
-        "description": "Type of entity (KIND), e.g., 'individual' or 'org'",
-    },
-    "adr": {
-        "default": "",
-        "description": "Address (ADR) in the format ';;Street;City;State;PostalCode;Country'",
-    },
-    "tel": {
-        "default": "",
-        "description": "Telephone number (TEL), e.g., '+1234567890'",
-    },
-    "impp": {
-        "default": "",
-        "description": "Instant messaging protocol (IMPP), e.g., 'aim:exampleuser'",
-    },
-    "photo": {
-        "default": "",
-        "description": "URL to a photo (PHOTO), e.g., 'http://example.com/photo.jpg'",
-    },
-    "note": {"default": "", "description": "A short description about you (NOTE)"},
-    "url": {
-        "default": "",
-        "description": "URL to public profile or personal web (URL), e.g., 'https://my.web.example.com/profile'",
-    },
-    "source": {
-        "default": None,
-        "description": "URL where the vCard will be hosted or can found (SOURCE)",
-    },
-}
 
 
 @app.command()
 def create(
-    output: str = typer.Option("output.vcf", help="Output file to save the vCard"),
-    interactive: bool = typer.Option(True, help="Interactive prompts"),
+    output: Path = typer.Option(
+        Path("dsi-card.vcf"), "--output", "-o", help="Output file to save the vCard"
+    ),
+    interactive: bool = typer.Option(
+        False, "--interactive", "-i", help="Interactive prompts", is_flag=True
+    ),
     fn: str = typer.Option(
         vcard_main_attributes["fn"]["default"],
         help=vcard_main_attributes["fn"]["description"],
@@ -196,8 +98,7 @@ def create(
     ),
     generate_key: bool = typer.Option(
         False,
-        "--key",
-        "-k",
+        "--generate-key",
         help="Generate a new Ed25519 keypair and save to PEM files (vcard_private.pem and vcard_public.pem)",
         is_flag=True,
     ),
@@ -282,15 +183,14 @@ def create(
 
         # Add the X-FEED attribute if the user wants to include it
         add_feed = typer.confirm(
-            "Do you want to add an X-FEED attribute for an RSS feed?", default=False
+            "Do you want to add a X-FEED attribute for an RSS feed?", default=False
         )
         if add_feed:
             feed_url = prompt_with_temp("x_feed", "Enter the RSS feed URL", "")
             custom_attributes["X-FEED"] = feed_url
 
         typer.secho(
-            "ℹ️ If you have feeds in different languages, add X-FEED;LANGUAGE:language-region to the vCard.",
-            fg=typer.colors.BLUE,
+            "ℹ️ If you have feeds in different languages, add X-FEED;LANGUAGE:language-region to the vCard."
         )
         custom_feeds = []
         add_feed = typer.confirm(
@@ -364,7 +264,7 @@ def create(
     keys = None
     if generate_key:
         priv, pub, key = action_generate_keypair(
-            "vcard_private.pem", "vcard_public.pem"
+            Path("vcard_private.pem"), Path("vcard_public.pem")
         )
         keys = [{"alg": "ed25519", "key_b64": key, "pref": 1, "encoding": "b"}]
 
@@ -408,8 +308,8 @@ def create(
             raise typer.Exit()
 
     # Write the vCard to the output file
-    write_file(vcard_content, output)
-
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(vcard_content, encoding="utf-8")
     typer.secho(f"✅ vCard generated and saved to {output}", fg=typer.colors.GREEN)
 
 
@@ -432,19 +332,21 @@ def fetch(
         help="Show what would be updated without writing any files.",
     ),
     backup: bool = typer.Option(
-        True,
-        "--backup/--no-backup",
+        False,
+        "--backup",
+        "-b",
         help="Create a .bak copy before overwriting.",
         is_flag=True,
     ),
     show_diff: bool = typer.Option(
         False,
         "--diff",
+        "-d",
         help="Show colored unified diff between old and new content.",
     ),
 ):
     """
-    Update vCards by fetching the remote vCard referenced in their SOURCE property.
+    Fetch or update vCards by fetching the remote vCard referenced in their SOURCE property.
 
     Supports multiple files, directories, URLs, dry-run mode, backups, colored diffs,
     a progress bar, and a final summary report.
@@ -455,7 +357,6 @@ def fetch(
     if total_inputs == 0:
         typer.secho("No valid .vcf files or URLs provided.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
-
 
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -476,7 +377,9 @@ def fetch(
                 filename = vcard.path
                 destination = output_dir / filename if output_dir else Path(filename)
                 vcard.to_file(destination)
-                progress.console.print(f"[green]  Downloaded and saved to:[/green] {url} -> {destination.name}")
+                progress.console.print(
+                    f"[green]  Downloaded and saved to:[/green] {url} -> {destination.name}"
+                )
                 downloaded += 1
             except Exception as e:
                 progress.console.print(f"[red]  Failed to fetch URL {url}: {e}[/red]")
@@ -487,19 +390,21 @@ def fetch(
             progress.console.print(f"[bold]Processing:[/bold] {file}")
 
             vcard = VCard(path=file)
-            old_text = vcard.raw
+            old_text = vcard.profile.raw
 
-            if not vcard.source:
-                progress.console.print("[yellow]  No SOURCE property found. Skipping.[/yellow]")
+            if not vcard.profile.source:
+                progress.console.print(
+                    "[yellow]  No SOURCE property found. Skipping.[/yellow]"
+                )
                 skipped += 1
                 progress.update(task, advance=1)
                 continue
 
-            url = vcard.source
+            url = vcard.profile.source
             progress.console.print(f"  Fetching: {url}")
 
             try:
-                new_text = VCard(url=url).raw
+                new_text = VCard(url=url).profile.raw
             except Exception as e:
                 progress.console.print(f"[red]  Failed to fetch SOURCE: {e}[/red]")
                 failed += 1
@@ -556,25 +461,33 @@ def fetch(
     typer.secho(f"  Failed: {failed}", fg=typer.colors.RED)
     typer.secho(f"Done.")
 
+
 @app.command()
 def parse(
-    input: Path = typer.Argument(..., exists=True, readable=True, help="Path to the .vcf file to parse")
+    input: Path = typer.Argument(
+        None, exists=True, readable=True, help="Path to the vCard file to parse"
+    )
 ):
     """
     Parse a vCard file and display its properties in a human-readable format.
     """
     try:
-        if not input.is_file():
-            typer.secho(f"The specified path is not a file: {input}", fg=typer.colors.RED)
+        text = None
+        if input.is_file():
+            text = input.read_text(encoding="utf-8")
+        elif not os.isatty(0):  # Check if stdin is not a terminal
+            text = sys.stdin.read().strip()
+
+        if not text:
+            typer.secho("❌ No input data provided for parsing.", fg=typer.colors.RED)
             raise typer.Exit()
-        text = input.read_text(encoding="utf-8")
         json_string = VCard(text=text).to_json()
         print(json_string)
-        
+
     except Exception as e:
         typer.secho(f"Failed to parse vCard: {e}", fg=typer.colors.RED)
         raise typer.Exit()
-    
+
 
 @app.command(help="Sign canonical endorsement strings for one or more vCard files")
 def endorse(
@@ -590,7 +503,8 @@ def endorse(
         "-v",
         exists=True,
         readable=True,
-        help="Path to the .vcf where the endorsement will be added"),
+        help="Path to the .vcf where the endorsement will be added",
+    ),
     priv: Path = typer.Option(
         ...,
         "--priv",
@@ -606,7 +520,7 @@ def endorse(
     ),
     write: bool = typer.Option(
         False,
-        "--write/--no-write",
+        "--write",
         help="Whether to write the endorsement to the vCard file. If false, the endorsement will be generated and printed but not saved.",
         is_flag=True,
     ),
@@ -615,7 +529,7 @@ def endorse(
     Parse each vCard, extract its preferred key, build canonical endorsement string,
     and sign it.
     """
-    
+
     valid_confidence_levels = {"low", "medium", "high"}
     if confidence not in valid_confidence_levels:
         typer.secho(
@@ -631,7 +545,7 @@ def endorse(
             f"Failed to load private key from '{priv}': {e}", fg=typer.colors.RED
         )
         raise typer.Exit(code=1)
-    
+
     v_card_inputs = VCardInputs(inputs)
 
     for vcard_path in v_card_inputs.vcard_files:
@@ -642,28 +556,113 @@ def endorse(
 
             if not preferred_key:
                 raise ValueError("No valid KEY entries found in the vCard")
-            
-            signature_endorsement = VCard.sign_endorsement(private_key, preferred_key.key_b64)
 
-            has_endorsement = v_card_input.has_endorsement_for_key(preferred_key.key_b64)
+            signature_endorsement = VCard.sign_endorsement(
+                private_key, preferred_key.key_b64
+            )
+
+            has_endorsement = v_card_input.has_endorsement_for_key(
+                preferred_key.key_b64
+            )
 
             endorsement_value = VCard.build_custom_attribute_endorsement(
-                preferred_key.key_b64, signature_endorsement, confidence=confidence,
-                date=datetime.now().strftime("%Y%m%dT%H%M%SZ")
+                preferred_key.key_b64,
+                signature_endorsement,
+                confidence=confidence,
+                date=datetime.now().strftime("%Y%m%dT%H%M%SZ"),
             )
             if write:
                 v_card = VCard(path=v_card_destination)
                 if has_endorsement:
-                    typer.secho(f"⚠️ Endorsement already exists for key {preferred_key.key_b64} in {v_card_destination}. Skipping write.", fg=typer.colors.YELLOW)
+                    typer.secho(
+                        f"⚠️ Endorsement already exists for key {preferred_key.key_b64} in {v_card_destination}. Skipping write.",
+                        fg=typer.colors.YELLOW,
+                    )
                 else:
                     v_card.add_line(endorsement_value)
                     v_card.to_file()
-                    typer.secho(f"✅ Endorsement added to {v_card.path}: {endorsement_value}", fg=typer.colors.GREEN)
+                    typer.secho(
+                        f"✅ Endorsement added to {v_card.path}: {endorsement_value}",
+                        fg=typer.colors.GREEN,
+                    )
             else:
                 print(endorsement_value)
 
         except Exception as e:
-            typer.secho(f"Failed to parse vCard from '{vcard_path}': {e}", fg=typer.colors.RED)
+            typer.secho(
+                f"Failed to parse vCard from '{vcard_path}': {e}", fg=typer.colors.RED
+            )
+
+
+@app.command(
+    help="Generate a QR code from the provided vCard file (support input piping) and save it to a file."
+)
+def qr(
+    input: str = typer.Argument(None, help="Data to encode in the QR code"),
+    output: str = typer.Option(
+        None, "--output", "-o", help="Output file to save the QR code image"
+    ),
+    image: str = typer.Option(
+        None, "--image", "-i", help="Path to an image to include in the QR code"
+    ),
+    caption_top: str = typer.Option(
+        "", "--caption-top", "-ct", help="Caption to display above the QR code"
+    ),
+    caption_bottom: str = typer.Option(
+        "", "--caption-bottom", "-cb", help="Caption to display below the QR code"
+    ),
+    font: Path = typer.Option(
+        None,
+        "--font",
+        "-f",
+        help="Path to a .ttf font file to use for captions (optional)",
+    ),
+):
+    """
+    Generate a QR code from the provided data and save it to a file.
+    """
+    # Check if the input is provided via standard input (piped data)
+
+    data = None
+    if input:
+        if os.path.isfile(input):
+            with open(input, "r", encoding="utf-8") as file:
+                data = file.read().strip()
+    elif not os.isatty(0):  # Check if stdin is not a terminal
+        data = sys.stdin.read().strip()
+
+    if not data:
+        typer.secho("❌ No input data provided for the QR code.", fg=typer.colors.RED)
+        raise typer.Exit()
+
+    if image and not os.path.isfile(image):
+        typer.secho(
+            f"❌ The specified image file does not exist: {image}", fg=typer.colors.RED
+        )
+        raise typer.Exit()
+
+    if not output:
+        typer.secho(
+            "❌ Output file path is required to save the QR code image.",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit()
+
+    if caption_top or caption_bottom:
+        if not font:
+            typer.secho(
+                "❌ A font file must be specified when using captions.",
+                fg=typer.colors.RED,
+            )
+            raise typer.Exit()
+        elif not os.path.isfile(font):
+            typer.secho(
+                f"❌ The specified font file does not exist: {font}",
+                fg=typer.colors.RED,
+            )
+            raise typer.Exit()
+
+    generate_qr(image, output, data, caption_top, caption_bottom)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
+import base64
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
-import base64
+from pathlib import Path
 import typer
 
 # ============================================================
@@ -38,19 +39,19 @@ def generate_keypair() -> tuple[bytes, bytes, str]:
     return private_pem, public_pem, public_b64
 
 
-def action_generate_keypair(priv: str, pub: str) -> tuple[bytes, bytes, str]:
+def action_generate_keypair(priv: Path, pub: Path) -> tuple[bytes, bytes, str]:
     """Generates an Ed25519 keypair and saves to the specified PEM files.
 
     Args:
-        priv (str): Path to save the private key PEM file.
-        pub (str): Path to save the public key PEM file.
+        priv (Path): Path to save the private key PEM file.
+        pub (Path): Path to save the public key PEM file.
     Returns:
         tuple: (private_key_pem, public_key_pem, public_key_b64_der)
     """
     priv_pem, pub_pem, pub_b64 = generate_keypair()
 
-    open(priv, "wb").write(priv_pem)
-    open(pub, "wb").write(pub_pem)
+    priv.write_bytes(priv_pem)
+    pub.write_bytes(pub_pem)
 
     typer.secho(
         f"✅ Keypair generated and saved to '{priv}' and '{pub}'", fg=typer.colors.GREEN
@@ -206,7 +207,6 @@ def sign_feed_item(
     """
     canonical = canonical_feed_string(pub_date, title, description_plain)
     sig = private_key.sign(canonical)
-    print(canonical.decode("utf-8"), "->", sig.hex())
     return sig.hex()
 
 

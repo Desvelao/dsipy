@@ -3,11 +3,15 @@
 - Run the app as module
 ```
 cd src
-python -m dsipy.app
+python -m dsipy
 ```
 
-# Install
-
+- Install
 ```
 pip install .
+```
+
+- Code format
+```
+black .
 ```
