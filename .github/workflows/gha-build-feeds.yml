@@ -1,0 +1,160 @@
+name: Build feeds file (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      wheel_tag:
+        description: Release tag for wheel download
+        required: false
+        type: string
+        default: "v0.0.1-alpha1"
+      source_dir:
+        description: Source directory used by dsipy command
+        required: false
+        type: string
+        default: "feeds"
+      feeds_file:
+        description: Output feed filename
+        required: false
+        type: string
+        default: "feeds.rss"
+      feeds_title:
+        description: Feed title
+        required: false
+        type: string
+        default: "DSI Feed"
+      feeds_description:
+        description: Feed description
+        required: false
+        type: string
+        default: "DSI feed updates"
+      feeds_author:
+        description: Feed author
+        required: true
+        type: string
+      feeds_email:
+        description: Feed author email
+        required: true
+        type: string
+      feed_link:
+        description: Feed URL. If empty, it is generated from owner/repo + feeds_file.
+        required: false
+        type: string
+        default: ""
+      artifact_name:
+        description: Artifact name that contains the generated feed file
+        required: false
+        type: string
+        default: "feeds-file"
+    secrets:
+      wheel_repo_token:
+        description: Optional token with read access to wheel_repo releases
+        required: false
+    outputs:
+      feeds_file:
+        description: Generated feed filename
+        value: ${{ jobs.build.outputs.feeds_file }}
+      artifact_name:
+        description: Artifact name with generated feed file
+        value: ${{ jobs.build.outputs.artifact_name }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      feeds_file: ${{ steps.meta.outputs.feeds_file }}
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+    env:
+      WHEEL_REPO: Desvelao/dsipy
+      WHEEL_TAG: ${{ inputs.wheel_tag }}
+      WHEEL_ASSET: "*.whl"
+      SOURCE_DIR: ${{ inputs.source_dir }}
+      FEEDS_FILE: ${{ inputs.feeds_file }}
+      FEEDS_TITLE: ${{ inputs.feeds_title }}
+      FEEDS_DESCRIPTION: ${{ inputs.feeds_description }}
+      FEEDS_AUTHOR: ${{ inputs.feeds_author }}
+      FEEDS_EMAIL: ${{ inputs.feeds_email }}
+      FEED_LINK: ${{ inputs.feed_link }}
+      ARTIFACT_NAME: ${{ inputs.artifact_name }}
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.12
+
+      - name: Resolve output metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          echo "feeds_file=${FEEDS_FILE}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Install wheel from GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.wheel_repo_token || github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p wheel
+
+          tag="${WHEEL_TAG}"
+          if [ -z "$tag" ]; then
+            tag=$(gh release view --repo "$WHEEL_REPO" --json tagName -q .tagName)
+          fi
+
+          gh release download "$tag" \
+            --repo "$WHEEL_REPO" \
+            --pattern "$WHEEL_ASSET" \
+            --dir wheel
+
+          wheel_file=$(find wheel -maxdepth 1 -type f -name '*.whl' | head -n 1)
+          if [ -z "$wheel_file" ]; then
+            echo "No wheel found in release $tag for $WHEEL_REPO matching $WHEEL_ASSET"
+            exit 1
+          fi
+
+          python -m pip install --upgrade pip
+          python -m pip install "$wheel_file"
+
+      - name: Build feeds file
+        run: |
+          set -euo pipefail
+
+          link="$FEED_LINK"
+          if [ -z "$link" ]; then
+            link="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${FEEDS_FILE}"
+          fi
+
+          echo "Building ${FEEDS_FILE}"
+          dsipy feeds build "$SOURCE_DIR" \
+            --title "$FEEDS_TITLE" \
+            --link "$link" \
+            --description "$FEEDS_DESCRIPTION" \
+            --author "$FEEDS_AUTHOR" \
+            --email "$FEEDS_EMAIL" \
+            --output "$FEEDS_FILE"
+
+      - name: Collect artifact
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          feeds_file=$(find . -maxdepth 6 -type f -name "$FEEDS_FILE" | head -n 1)
+          if [ -z "$feeds_file" ]; then
+            echo "$FEEDS_FILE was not generated"
+            exit 1
+          fi
+
+          cp "$feeds_file" "out/$FEEDS_FILE"
+
+      - name: Upload generated feed artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: out/${{ env.FEEDS_FILE }}
+          if-no-files-found: error
+          retention-days: 7

@@ -47,32 +47,33 @@ def generate_rss(
         # https://docs.python.org/3/library/datetime.html#strftime-and-strptime-behavior
         id = item.get("id") or slugify(item["path"])
         pub_date = item["date"]
-        description = item.get("content")
-        title = item.get("title")
+        item_description = item.get("content")
+        item_title = item.get("title")
+
+        signature_value = None
+        signature_id = None
 
         if sign:
             signature_value = (
-                sign_feed_item(sign["key"], pub_date, title, description)
+                sign_feed_item(sign["key"], pub_date, item_title, item_description)
                 if sign["key"]
                 else None
             )
             signature_id = sign["id"] if sign["id"] else None
 
+        extensions = []
+        if signature_value and signature_id:
+            extensions.append(Signature(signature_value, sign["id"]))
+        
         feed_items.append(
             Item(
-                title=title,
+                title=item_title,
                 link=item.get("link") or f"{link}/feed/{id}",
-                description=description,
+                description=item_description,
                 author=f"{author['name']} ({author['email']})",
                 guid=Guid(id),
                 pubDate=pub_date,
-                extensions=[
-                    (
-                        Signature(signature_value, sign["id"])
-                        if signature_value and signature_id
-                        else None
-                    )
-                ],
+                extensions=extensions,
             )
         )
     feed = Feed(

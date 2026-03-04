@@ -1,8 +1,15 @@
 import os
 import datetime
-from email.utils import format_datetime
+from ...shared.publish import get_publisher
 import typer
 from functools import wraps
+import difflib
+from pathlib import Path
+from typing import List
+from rich.console import Console
+from rich.progress import Progress
+from rich.syntax import Syntax
+
 from .lib.utils import slugify
 from .lib.markdown import (
     MarkdownFeed,
@@ -206,7 +213,7 @@ def build(
     email: str = typer.Option(None, "--email", "-e", help="Email of the author"),
     type: str = typer.Option("markdown", "--type", help="Define the type of states"),
     interactive: bool = typer.Option(
-        False, "--interactive", "-i", help="Interactive prompts"
+        False, "--interactive", "-i", help="Interactive prompts", is_flag=True
     ),
     signing_key_priv_file: str | None = typer.Option(
         None, "--sign-priv", help="Private key file to sign RSS items"
@@ -255,22 +262,22 @@ def build(
         "author@email.com",
         interactive,
     )
-    signing_key_priv_file = get_option_value(
-        "sign-priv",
-        signing_key_priv_file,
-        "Provide the signing key file to sign the RSS feed items",
-        None,
-        interactive,
-        False,
-    )
-    signing_key_public_file = get_option_value(
-        "sign-public",
-        signing_key_public_file,
-        "Provide the signing key file to sign the RSS feed items",
-        None,
-        interactive,
-        False,
-    )
+    # signing_key_priv_file = get_option_value(
+    #     "sign-priv",
+    #     signing_key_priv_file,
+    #     "Provide the signing key file to sign the RSS feed items",
+    #     None,
+    #     interactive,
+    #     False,
+    # )
+    # signing_key_public_file = get_option_value(
+    #     "sign-public",
+    #     signing_key_public_file,
+    #     "Provide the signing key file to sign the RSS feed items",
+    #     None,
+    #     interactive,
+    #     False,
+    # )
 
     if signing_key_priv_file:
         signing_key_priv_file = os.path.join(signing_key_priv_file)
@@ -310,6 +317,119 @@ def build(
     )
 
     typer.secho(f"✅ RSS feed generated: {output}", fg=typer.colors.GREEN)
+
+
+console = Console()
+
+
+def iter_feed_files(paths: List[Path]):
+    exts = {".xml", ".json", ".atom", ".rss"}
+    for p in paths:
+        if p.is_file() and p.suffix.lower() in exts:
+            yield p
+        elif p.is_dir():
+            for file in p.rglob("*"):
+                if file.suffix.lower() in exts:
+                    yield file
+
+
+@app.command("publish")
+def publish(
+    inputs: List[Path] = typer.Argument(...),
+    provider: str = typer.Option(..., "--provider", help="Provider: github, s3, webdav, local"),
+    prefix: str = typer.Option("", "--prefix", help="Path prefix on provider"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    show_diff: bool = typer.Option(False, "--diff"),
+    provider_args: List[str] = typer.Option(
+        None,
+        "--arg",
+        help="Provider-specific arguments: key=value",
+    ),
+):
+    """
+    Publish feeds to multiple providers (GitHub, S3, WebDAV, local).
+    """
+
+    # Parse provider args
+    kwargs = {}
+    if provider_args:
+        for arg in provider_args:
+            key, value = arg.split("=", 1)
+            kwargs[key] = value
+
+    prov = get_publisher(provider, **kwargs)
+
+    feed_files = list(iter_feed_files(inputs))
+    if not feed_files:
+        console.print("[red]No feed files found.[/red]")
+        raise typer.Exit(1)
+
+    published = 0
+    unchanged = 0
+    failed = 0
+
+    with Progress() as progress:
+        task = progress.add_task("Publishing feeds...", total=len(feed_files))
+
+        for file in feed_files:
+            rel_path = f"{prefix}{file.name}" if prefix else file.name
+            progress.console.print(f"[bold]Publishing:[/bold] {file} → {rel_path}")
+
+            local_text = file.read_text()
+
+            try:
+                remote_text, version = prov.get_remote(rel_path)
+            except Exception as e:
+                progress.console.print(f"[red]  Failed to fetch remote: {e}[/red]")
+                failed += 1
+                progress.update(task, advance=1)
+                continue
+
+            # Diff
+            if show_diff and remote_text is not None:
+                diff = "\n".join(
+                    difflib.unified_diff(
+                        remote_text.splitlines(),
+                        local_text.splitlines(),
+                        fromfile="(remote)",
+                        tofile=str(file),
+                        lineterm="",
+                    )
+                )
+                if diff.strip():
+                    syntax = Syntax(diff, "diff", theme="ansi_dark")
+                    progress.console.print(syntax)
+                else:
+                    progress.console.print("[green]  No differences.[/green]")
+
+            # Skip if unchanged
+            if remote_text == local_text:
+                progress.console.print("[green]  Unchanged.[/green]")
+                unchanged += 1
+                progress.update(task, advance=1)
+                continue
+
+            if dry_run:
+                progress.console.print("[cyan]  Dry-run: no changes written.[/cyan]")
+                published += 1
+                progress.update(task, advance=1)
+                continue
+
+            try:
+                prov.publish(rel_path, local_text, version)
+                progress.console.print(f"[green]  Published:[/green] {rel_path}")
+                published += 1
+            except Exception as e:
+                progress.console.print(f"[red]  Failed to publish: {e}[/red]")
+                failed += 1
+
+            progress.update(task, advance=1)
+
+    console.print("\n[bold]Summary:[/bold]")
+    console.print(f"  [green]Published:[/green]  {published}")
+    console.print(f"  [cyan]Unchanged:[/cyan]   {unchanged}")
+    console.print(f"  [red]Failed:[/red]      {failed}")
+    console.print("Done.")
 
 
 if __name__ == "__main__":

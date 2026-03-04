@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0)"
+        required: true
+        type: string
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-build-dist.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+      artifact-name: release-dist-${{ inputs.tag || github.ref_name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      TAG_NAME: ${{ inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG_NAME }}
+          fetch-depth: 0
+
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist-${{ env.TAG_NAME }}
+          path: dist
+
+      - name: Generate changelog list
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG_NAME}^" 2>/dev/null || true)
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${TAG_NAME}"
+          else
+            RANGE="${TAG_NAME}"
+          fi
+
+          FEAT_LIST=$(git log --no-merges --pretty=format:'%s|%an|%ae|%h' "$RANGE" | awk -F'|' 'tolower($1) ~ /^feat(\(.+\))?:/ { sub(/^feat(\(.+\))?:[[:space:]]*/, "", $1); printf "- %s ([@%s](https://github.com/%s), %s)\n", $1, $2, $2, $4 }')
+          FIX_LIST=$(git log --no-merges --pretty=format:'%s|%an|%ae|%h' "$RANGE" | awk -F'|' 'tolower($1) ~ /^fix(\(.+\))?:/ { sub(/^fix(\(.+\))?:[[:space:]]*/, "", $1); printf "- %s ([@%s](https://github.com/%s), %s)\n", $1, $2, $2, $4 }')
+          CHANGE_LIST=$(git log --no-merges --pretty=format:'%s|%an|%ae|%h' "$RANGE" | awk -F'|' 'tolower($1) !~ /^feat(\(.+\))?:/ && tolower($1) !~ /^fix(\(.+\))?:/ { printf "- %s ([@%s](https://github.com/%s), %s)\n", $1, $2, $2, $4 }')
+          {
+            echo "## Changes"
+            echo
+            if [ -n "$FEAT_LIST" ]; then
+              echo "### Features"
+              echo "$FEAT_LIST"
+              echo
+            fi
+            if [ -n "$FIX_LIST" ]; then
+              echo "### Fixes"
+              echo "$FIX_LIST"
+              echo
+            fi
+            if [ -n "$CHANGE_LIST" ]; then
+              echo "### Other Changes"
+              echo "$CHANGE_LIST"
+              echo "- None"
+            fi
+          } > RELEASE_NOTES.md
+
+      - name: Create GitHub release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          generate_release_notes: true
+          prerelease: ${{ contains(env.TAG_NAME, '-alpha') || contains(env.TAG_NAME, '-beta') || contains(env.TAG_NAME, '-rc') }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
