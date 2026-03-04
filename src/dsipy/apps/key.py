@@ -44,7 +44,7 @@ def encode(
 
 
 @app.command(
-    help="Convert a public key PEM file to Base64-encoded DER format for vCard use"
+    help="Convert a Base64-encoded DER format for vCard use to public key PEM file"
 )
 def decode(
     content: str = typer.Argument(
