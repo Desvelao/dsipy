@@ -1,26 +1,22 @@
-import os
 import datetime
-from ...shared.publish import get_publisher
-import typer
-from functools import wraps
 import difflib
+from functools import wraps
+import os
 from pathlib import Path
-from typing import List
-from rich.console import Console
 from rich.progress import Progress
 from rich.syntax import Syntax
-
-from .lib.utils import slugify
-from .lib.markdown import (
-    MarkdownFeed,
-)
+import typer
+from typing import List
+from .lib.feed import RSSFeed
+from .lib.markdown import get_feed_class
+from ...shared.cli import Cli
+from ...shared.publish import get_publisher
 from ...shared.security import (
     load_private_key_pem,
     load_public_key_pem,
     public_key_to_b64der,
 )
-
-feed_types = {"markdown": MarkdownFeed}
+from ...shared.utils import slugify
 
 
 def get_option_value(
@@ -48,37 +44,7 @@ def get_option_value(
     return current_value
 
 
-app = typer.Typer(
-    help="A CLI tool to generate RSS feeds from feed files",
-)
-
-
-def inject_settings(*settings):
-    """
-    A decorator to inject specific settings from the configuration file into the command.
-    If a setting is not provided via the command arguments, it will be loaded from the configuration file.
-    """
-
-    def decorator(func):
-        @wraps(func)  # Preserve the original function metadata
-        def wrapper(*args, **kwargs):
-            # Inject each requested setting
-            for setting in settings:
-                if setting not in kwargs or kwargs[setting] is None:
-                    value = app.config.get(setting)
-                    if value is None:
-                        continue
-                        # typer.secho(
-                        #     f"❌ The '{setting}' parameter is not defined and cannot be loaded from the configuration file.",
-                        #     fg=typer.colors.RED,
-                        # )
-                        # raise typer.Exit()
-                    kwargs[setting] = value
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
+app = Cli(help="A CLI tool to generate RSS feeds from feed files", no_args_is_help=True)
 
 
 @app.command()
@@ -91,21 +57,18 @@ def new(
         None, "--filename", "-f", help="Filename for the new feed"
     ),
     interactive: bool = typer.Option(
-        False, "--interactive", "-i", help="Interactive prompts"
+        False, "--interactive", "-i", help="Interactive prompts", is_flag=True
     ),
-    type: str = typer.Option(
+    feed_type: str = typer.Option(
         "markdown", "--type", help="Define the type of feed to create"
     ),
 ):
 
-    feed_class = feed_types.get(type)
-
-    if not feed_class:
-        typer.secho(f"❌ Unsupported feed type: {type}", fg=typer.colors.RED)
-        raise typer.Exit()
+    feed_class = get_feed_class(feed_type)
 
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # TODO: review usage of option_value_decorator vs get_option_value for consistency and flexibility
     filename = get_option_value(
         "filename",
         filename,
@@ -114,11 +77,12 @@ def new(
         interactive,
         False,
     )
+
     feed_path = os.path.join(f"{filename}")
 
     if os.path.exists(feed_path):
         typer.secho(
-            f"❌ A feed directory with the name '{filename}' already exists. Please choose a different name.",
+            f"❌ A feed file with the name '{filename}' already exists. Please choose a different name.",
             fg=typer.colors.RED,
         )
         raise typer.Exit()
@@ -139,9 +103,9 @@ def new(
         interactive,
     )
 
-    file_content = feed_class.create_state(feed_path, title, message, now)
+    feed_class.create_state(feed_path, title, message, now)
 
-    typer.secho(f"Edit the file with a text editor: {feed_path}", fg=typer.colors.GREEN)
+    typer.secho(f"ℹ️  Edit the file with a text editor: {feed_path}")
 
 
 # @app.command()
@@ -197,7 +161,7 @@ def build(
     directory: str = typer.Argument(
         ..., help="Directory where the feed files are located"
     ),
-    output: str = typer.Option("feed.rss", "--output", "-o", help="Output RSS file"),
+    output: Path = typer.Option("feed.rss", "--output", "-o", help="Output RSS file"),
     limit: int | None = typer.Option(
         None, "--limit", "-l", help="Limit number of states to include in the feed"
     ),
@@ -211,7 +175,9 @@ def build(
     ),
     author: str = typer.Option(None, "--author", "-a", help="Author information"),
     email: str = typer.Option(None, "--email", "-e", help="Email of the author"),
-    type: str = typer.Option("markdown", "--type", help="Define the type of states"),
+    feed_type: str = typer.Option(
+        "markdown", "--type", help="Define the type of states"
+    ),
     interactive: bool = typer.Option(
         False, "--interactive", "-i", help="Interactive prompts", is_flag=True
     ),
@@ -221,18 +187,15 @@ def build(
     signing_key_public_file: str | None = typer.Option(
         None, "--sign-pub", help="Public key file to verify RSS item signatures"
     ),
+    var: List[str] = typer.Option(
+        None, "--var", help="Template variables as key=value pairs"
+    ),
+    var_file: Path = typer.Option(
+        None, "--var-file", help="File with template variables (one KEY=VALUE per line)"
+    )
 ):
 
-    feed_class = feed_types.get(type)
-
-    if not feed_class:
-        typer.secho(f"❌ Unsupported feed type: {type}", fg=typer.colors.RED)
-        raise typer.Exit()
-
-    states = feed_class.collect(directory)
-
-    if limit:
-        states = states[:limit]
+    feed_class = get_feed_class(feed_type)
 
     link = get_option_value(
         "link",
@@ -262,64 +225,89 @@ def build(
         "author@email.com",
         interactive,
     )
-    # signing_key_priv_file = get_option_value(
-    #     "sign-priv",
-    #     signing_key_priv_file,
-    #     "Provide the signing key file to sign the RSS feed items",
-    #     None,
-    #     interactive,
-    #     False,
-    # )
-    # signing_key_public_file = get_option_value(
-    #     "sign-public",
-    #     signing_key_public_file,
-    #     "Provide the signing key file to sign the RSS feed items",
-    #     None,
-    #     interactive,
-    #     False,
-    # )
-
-    if signing_key_priv_file:
-        signing_key_priv_file = os.path.join(signing_key_priv_file)
-        if not os.path.isfile(signing_key_priv_file):
-            typer.secho(
-                f"❌ The private signing key file '{signing_key_priv_file}' does not exist or is not a file.",
-                fg=typer.colors.RED,
-            )
-            raise typer.Exit()
-
-    if signing_key_public_file:
-        signing_key_public_file = os.path.join(signing_key_public_file)
-        if not os.path.isfile(signing_key_public_file):
-            typer.secho(
-                f"❌ The public signing key file '{signing_key_public_file}' does not exist or is not a file.",
-                fg=typer.colors.RED,
-            )
-            raise typer.Exit()
-
-    states = feed_class.collect(directory)
-
-    if limit:
-        states = states[:limit]
 
     sign = None
 
     if signing_key_priv_file and signing_key_public_file:
-        sign = {
-            "key": load_private_key_pem(open(signing_key_priv_file, "rb").read()),
-            "id": public_key_to_b64der(
-                load_public_key_pem(open(signing_key_public_file, "rb").read())
-            ),
-        }
+        priv_key_data = None
+        pub_key_data = None
 
-    feed_class.build(
-        states, title, link, description, author, email, language, output, sign
+        if os.path.isfile(signing_key_priv_file):
+            priv_key_data = Path(signing_key_priv_file).read_bytes()
+        else:
+            priv_key_data = signing_key_priv_file.encode()
+
+        if os.path.isfile(signing_key_public_file):
+            pub_key_data = Path(signing_key_public_file).read_bytes()
+        else:
+            pub_key_data = signing_key_public_file.encode()
+            
+        if priv_key_data and pub_key_data:
+            sign = {
+                "key": load_private_key_pem(priv_key_data),
+                "id": public_key_to_b64der(load_public_key_pem(pub_key_data)),
+            }
+
+    # Parse var arguments into a dictionary
+    vars_dict = {}
+    # Parse var-file if provided
+    if var_file:
+        if var_file.exists():
+            for line in var_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and "=" in line and not line.startswith("#"):
+                    key, value = line.split("=", 1)
+                    vars_dict[key.strip()] = value.strip()
+        else:
+            typer.secho(
+                f"❌ Variable file not found: {var_file}",
+                fg=typer.colors.RED,
+            )
+            raise typer.Exit()
+    
+    # Parse var arguments
+    if var:
+        for arg in var:
+            key, value = arg.split("=", 1)
+            vars_dict[key] = value
+
+    states = feed_class.collect(directory)
+
+    if limit:
+        states = states[:limit]    
+
+    # Simple templating for content using metadata values (e.g. {{ title }}, {{ date }}, etc.)
+    for state in states:
+        if state.get("title"):
+            state["title"] = RSSFeed.replace_template_variables(state["title"], state["metadata"], vars_dict)
+
+        if state.get("id"):
+            state["id"] = RSSFeed.replace_template_variables(state["id"], state["metadata"], vars_dict)
+
+        if state.get("link"):
+            state["link"] = RSSFeed.replace_template_variables(state["link"], state["metadata"], vars_dict)
+
+        if state.get("image"):
+            state["image"] = RSSFeed.replace_template_variables(state["image"], state["metadata"], vars_dict)
+
+        if state.get("content"):
+            state["content"] = RSSFeed.replace_template_variables(state["content"], state["metadata"], vars_dict)
+            # Allow HTML in RSS description
+            if state.get("content_type") == "html":
+                state["content"] = f"<![CDATA[{state['content']}]]>"
+
+    build_date = datetime.datetime.now()
+    # TODO: consider adding more feed formats (e.g. JSON Feed) and allowing users to choose the output format
+    feed_content = RSSFeed.build(
+        title, link, description, author, email, language, build_date, states, sign
     )
 
-    typer.secho(f"✅ RSS feed generated: {output}", fg=typer.colors.GREEN)
-
-
-console = Console()
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(feed_content, encoding="utf-8")
+        typer.secho(f"✅ RSS feed generated: {output}", fg=typer.colors.GREEN)
+    else:
+        print(feed_content)
 
 
 def iter_feed_files(paths: List[Path]):
@@ -336,7 +324,9 @@ def iter_feed_files(paths: List[Path]):
 @app.command("publish")
 def publish(
     inputs: List[Path] = typer.Argument(...),
-    provider: str = typer.Option(..., "--provider", help="Provider: github, s3, webdav, local"),
+    provider: str = typer.Option(
+        ..., "--provider", help="Provider: github, s3, webdav, local"
+    ),
     prefix: str = typer.Option("", "--prefix", help="Path prefix on provider"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     show_diff: bool = typer.Option(False, "--diff"),
@@ -361,7 +351,10 @@ def publish(
 
     feed_files = list(iter_feed_files(inputs))
     if not feed_files:
-        console.print("[red]No feed files found.[/red]")
+        typer.secho(
+            f"❌ No feed files found in the specified paths: {inputs}",
+            fg=typer.colors.RED,
+        )
         raise typer.Exit(1)
 
     published = 0
@@ -425,11 +418,11 @@ def publish(
 
             progress.update(task, advance=1)
 
-    console.print("\n[bold]Summary:[/bold]")
-    console.print(f"  [green]Published:[/green]  {published}")
-    console.print(f"  [cyan]Unchanged:[/cyan]   {unchanged}")
-    console.print(f"  [red]Failed:[/red]      {failed}")
-    console.print("Done.")
+    typer.secho("Summary:", bold=True)
+    typer.secho(f"  Published:  {published}", fg=typer.colors.GREEN)
+    typer.secho(f"  Unchanged:   {unchanged}", fg=typer.colors.CYAN)
+    typer.secho(f"  Failed:      {failed}", fg=typer.colors.RED)
+    typer.secho("Done.")
 
 
 if __name__ == "__main__":

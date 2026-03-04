@@ -1,12 +1,23 @@
-import os
-import re
-from dataclasses import dataclass, field
-from typing import List, Optional
-from pathlib import Path
-import requests
-from .security import canonical_endorsement_string, sign_endorsement
-import typer
+from dataclasses import dataclass, field, asdict
 import json
+from opyml import OPML, Outline
+from pathlib import Path
+import re
+import requests
+from typing import List, Optional
+import vobject
+from .security import canonical_endorsement_string, sign_endorsement
+from .file import get_local_files_from_inputs
+
+allowed_vcard_extensions = [".vcf", ".vcard"]
+
+
+def file_is_vcard(f):
+    if type(f) == str:
+        return f.endswith((".vcf", ".vcard"))
+    if isinstance(f, Path):
+        return f.suffix.lower() in allowed_vcard_extensions
+
 
 # -----------------------------
 # Data structures
@@ -34,11 +45,13 @@ class RevokedKey:
     reason: Optional[str] = None
     date: Optional[str] = None
 
+
 @dataclass
 class Feed:
     language: str
     category: str
     url: str
+
 
 vcard_main_attributes = {
     "fn": {"default": "", "description": "Full Name (FN)"},
@@ -112,7 +125,7 @@ class Profile:
     impp: Optional[str] = None
     note: Optional[str] = None
     url: Optional[str] = None
-    source: Optional[str] = None # REQUIRED
+    source: Optional[str] = None  # REQUIRED
     keys: List[PublicKey] = field(default_factory=list)
     endorsements: List[Endorsement] = field(default_factory=list)
     revocations: List[RevokedKey] = field(default_factory=list)
@@ -160,18 +173,21 @@ class VCard:
             text, filename = VCard._fetch(url)
             self.profile = parse_vcard(text)
             self.url = url
-            self.path = filename if filename.endswith((".vcf", ".vcard")) else f"{filename}.vcf"
+            self.path = filename if file_is_vcard(filename) else f"{filename}.vcf"
         else:
-            raise ValueError("Either text, path, or url must be provided to initialize the vCard.")
+            raise ValueError(
+                "Either text, path, or url must be provided to initialize the vCard."
+            )
+
     def parse(self, text: str) -> Profile:
         """Parse vCard text and update the profile."""
         self.profile = parse_vcard(text)
         return self.profile
-    
+
     def build(self) -> str:
         """Build vCard content from the current profile."""
         return build_vcard_from_raw_lines(self.profile)
-    
+
     def add_line(self, line: str) -> None:
         """Add a line to the vCard."""
         content = self.profile.raw or self.build()
@@ -185,14 +201,14 @@ class VCard:
     def to_string(self) -> str:
         """Return the vCard as a string."""
         return self.profile.raw or self.build()
-    
+
     def to_file(self, path: Path = None) -> None:
         """Save the vCard to a file."""
         file_path = path if path else getattr(self, "path", None)
         if not file_path:
             raise ValueError("No path specified for saving the vCard.")
         file_path.write_text(self.to_string(), encoding="utf-8")
-    
+
     def to_json(self) -> str:
         """Return the vCard profile as a JSON string."""
         return json.dumps(asdict(self.profile), ensure_ascii=False)
@@ -202,18 +218,26 @@ class VCard:
         if not self.profile.keys:
             return None
         preferred_keys = sorted(
-            self.profile.keys, key=lambda k: k.pref if k.pref is not None else float("inf")
+            self.profile.keys,
+            key=lambda k: k.pref if k.pref is not None else float("inf"),
         )
-        return preferred_keys[0]  # Return the key with the lowest PREF value (highest priority)
+        return preferred_keys[
+            0
+        ]  # Return the key with the lowest PREF value (highest priority)
+
     @staticmethod
     def sign_endorsement(private_key, endorsee_key_b64: str) -> str:
         """Return the endorsement signature in hexadecimal format."""
-        return sign_endorsement(private_key, canonical_endorsement_string(endorsee_key_b64))
-    
+        return sign_endorsement(
+            private_key, canonical_endorsement_string(endorsee_key_b64)
+        )
+
     def has_endorsement_for_key(self, endorsee_key_b64: str) -> bool:
         """Check if there is an endorsement for the given endorsee key."""
-        return any(e.endorsee_key_b64 == endorsee_key_b64 for e in self.profile.endorsements)
-    
+        return any(
+            e.endorsee_key_b64 == endorsee_key_b64 for e in self.profile.endorsements
+        )
+
     @staticmethod
     def _fetch(url: str) -> str:
         """
@@ -230,13 +254,20 @@ class VCard:
         """
         response = requests.get(url, timeout=10)
         response.raise_for_status()
-        filename = response.headers.get('Content-Disposition', '').split('filename=')[-1].strip('"\'') or url.split('/')[-1]
+        response.encoding = "utf-8"
+        filename = (
+            response.headers.get("Content-Disposition", "")
+            .split("filename=")[-1]
+            .strip("\"'")
+            or url.split("/")[-1]
+        )
 
         text = response.text
         if not text.strip().startswith("BEGIN:VCARD"):
             raise ValueError(f"URL does not contain a valid vCard: {url}")
-        
+
         return text, filename
+
     @staticmethod
     def build_custom_attribute_social_platform(name):
         """
@@ -249,6 +280,7 @@ class VCard:
             str: The formatted custom attribute string.
         """
         return f"X-SOCIAL;PLATFORM={name.strip().lower()}"
+
     @staticmethod
     def build_custom_attribute(name):
         """
@@ -261,8 +293,11 @@ class VCard:
             str: The formatted custom attribute string.
         """
         return f"{name.strip().upper()}="
+
     @staticmethod
-    def build_custom_attribute_endorsement(canonical_value: str, signature_hex, date=None, confidence=None, encoding="b"):
+    def build_custom_attribute_endorsement(
+        canonical_value: str, signature_hex, date=None, confidence=None, encoding="b"
+    ):
         """
         Build a custom endorsement attribute string for the vCard.
 
@@ -283,6 +318,7 @@ class VCard:
         params.append(f"ENCODING={encoding}")
         params_str = ";" + ";".join(params) if params else ""
         return f"X-ENDORSE{params_str}:{canonical_value}"
+
     @staticmethod
     def build_content(
         fn=None,
@@ -385,7 +421,6 @@ class VCard:
         vcard_content += "END:VCARD"
 
         return vcard_content
-        
 
 
 def parse_vcard(text: str) -> Profile:
@@ -394,12 +429,12 @@ def parse_vcard(text: str) -> Profile:
 
     for line in lines:
 
-        attr_name=None
-        value=None
-        attributes={}
+        attr_name = None
+        value = None
+        attributes = {}
 
         match = re.match(r"^[^:;]+", line)
-        
+
         # -------------------------
         # Public keys
         # -------------------------
@@ -424,7 +459,9 @@ def parse_vcard(text: str) -> Profile:
             attributes = parse_params(header)
             profile.revocations.append(
                 RevokedKey(
-                    key_b64=value, reason=attributes.get("REASON"), date=attributes.get("DATE")
+                    key_b64=value,
+                    reason=attributes.get("REASON"),
+                    date=attributes.get("DATE"),
                 )
             )
 
@@ -463,10 +500,17 @@ def parse_vcard(text: str) -> Profile:
             attr_name_matched = match.group(0).lower()
             if attr_name_matched in vcard_main_attributes:
                 attr_name = attr_name_matched
-                value = line[len(attr_name_matched) + 1:]
+                value = line[len(attr_name_matched) + 1 :]
                 setattr(profile, attr_name_matched, value)
-        
-        profile.raw_lines.append({"line": line, "attr_name": attr_name, "value": value, "attributes": attributes})
+
+        profile.raw_lines.append(
+            {
+                "line": line,
+                "attr_name": attr_name,
+                "value": value,
+                "attributes": attributes,
+            }
+        )
 
     return profile
 
@@ -482,42 +526,46 @@ def build_vcard_from_raw_lines(profile: Profile) -> str:
         str: The reconstructed vCard content.
     """
     vcard_content = "BEGIN:VCARD\nVERSION:4.0\n"
-    
+
     for raw_line in profile.raw_lines:
         line = raw_line.get("line", "")
-        if line and not line.startswith("BEGIN:") and not line.startswith("END:") and not line.startswith("VERSION:"):
+        if (
+            line
+            and not line.startswith("BEGIN:")
+            and not line.startswith("END:")
+            and not line.startswith("VERSION:")
+        ):
             vcard_content += f"{line}\n"
-    
+
     vcard_content += "END:VCARD"
     return vcard_content
 
 
-
-def generate_opml_from_vcards(vcard_files):
+def generate_opml_from_vcards(vcard_files: List[Path]) -> str:
     """
     Reads vCard files and generates an OPML file.
 
     Args:
-        vcard_files (list): List of paths to vCard files.
+        vcard_files (List[Path]): List of paths to vCard files.
     """
-    import vobject
-    from opyml import OPML, Outline
-
     opml = OPML()
 
     for vcard_file in vcard_files:
-        with open(vcard_file, "r", encoding="utf-8") as f:
-            for vcard in vobject.readComponents(f):
-                # Extract the name and feed URL from the vCard
-                name = vcard.fn.value if hasattr(vcard, "fn") else "Unknown"
-                feed_url = vcard.x_feed.value if hasattr(vcard, "x_feed") else None
+        text = vcard_file.read_text(encoding="utf-8")
+        # TODO: unify the parse of vCard files with the VCard class
+        for vcard in vobject.readComponents(text):
+            # Extract the name and feed URL from the vCard
+            name = vcard.fn.value if hasattr(vcard, "fn") else "Unknown"
+            feed_url = vcard.x_feed.value if hasattr(vcard, "x_feed") else None
 
-                if feed_url:
-                    opml.body.outlines.append(
-                        Outline(text=name, title=name, xml_url=feed_url)
-                    )
-
+            if feed_url:
+                opml.body.outlines.append(
+                    Outline(text=name, title=name, xml_url=feed_url)
+                )
+    if len(opml.body.outlines) == 0:
+        raise ValueError("No valid vCards with feed URLs found in the provided files.")
     return opml.to_xml()
+
 
 def fetch_vcard_from_url(url):
     """
@@ -534,13 +582,20 @@ def fetch_vcard_from_url(url):
     """
     response = requests.get(url, timeout=10)
     response.raise_for_status()
-    filename = response.headers.get('Content-Disposition', '').split('filename=')[-1].strip('"\'') or url.split('/')[-1]
+    response.encoding = "utf-8"
+    filename = (
+        response.headers.get("Content-Disposition", "")
+        .split("filename=")[-1]
+        .strip("\"'")
+        or url.split("/")[-1]
+    )
 
     text = response.text
     if not text.strip().startswith("BEGIN:VCARD"):
         raise ValueError(f"URL does not contain a valid vCard: {url}")
-    
+
     return text, filename
+
 
 def fetch_save_vcard_from_url(url, output_dir: Path = None) -> tuple[Path, str]:
     """
@@ -554,22 +609,26 @@ def fetch_save_vcard_from_url(url, output_dir: Path = None) -> tuple[Path, str]:
         tuple: A tuple containing the destination Path and the vCard content as text.
     Raises:
         requests.RequestException: If the URL fetch fails."""
-    
+
     text, filename = fetch_vcard_from_url(url)
-   
+
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
-    filename = filename if filename.endswith((".vcf", ".vcard")) else f"{filename}.vcf"
+    filename = filename if file_is_vcard(filename) else f"{filename}.vcf"
     destination = output_dir / filename if output_dir else Path(filename)
     destination.write_text(text, encoding="utf-8")
     return destination, text
+
 
 class VCardInputs:
     def __init__(self, inputs: List[str]):
         self.inputs = inputs
         self.classified = VCardInputs.classify_inputs(inputs)
-        self.vcard_files = VCardInputs.get_vcard_local_files_from_inputs(self.classified["paths"])
+        self.vcard_files = VCardInputs.get_vcard_local_files_from_inputs(
+            self.classified["paths"]
+        )
         self.vcard_urls = self.classified["urls"]
+
     @staticmethod
     def classify_inputs(inputs):
         """
@@ -582,50 +641,20 @@ class VCardInputs:
             dict: Dictionary with 'urls' and 'paths' keys, each containing a list of classified inputs.
         """
         classified = {"urls": [], "paths": []}
-        
+
         url_pattern = r"^https?://"
-        
+
         for input_item in inputs:
             if isinstance(input_item, str) and re.match(url_pattern, input_item):
                 classified["urls"].append(input_item)
             else:
-                classified["paths"].append(Path(input_item) if isinstance(input_item, str) else input_item)
-        
+                classified["paths"].append(
+                    Path(input_item) if isinstance(input_item, str) else input_item
+                )
+
         return classified
+
     @staticmethod
-    def get_vcard_local_files_from_inputs(inputs):
+    def get_vcard_local_files_from_inputs(inputs: List[Path]) -> List[Path]:
 
-        vcf_files = []
-        for input_path in inputs:
-            if not input_path.exists():
-                typer.secho(f"Input path does not exist: {input_path}", fg=typer.colors.RED)
-                continue
-            if not input_path.is_file() and not input_path.is_dir():
-                typer.secho(f"Input path is not a file or directory: {input_path}", fg=typer.colors.RED)
-                continue
-            if input_path.is_file() and (input_path.suffix.lower() in [".vcf", ".vcard"]):
-                vcf_files.append(input_path)
-            if input_path.is_dir():
-                for root, _, files in os.walk(input_path):
-                    for f in files:
-                        if f.lower().endswith((".vcf", ".vcard")):
-                            vcf_files.append(Path(root) / f)
-        return vcf_files
-    
-
-
-def add_line_to_vcard(vcard_content: str, line: str) -> str:
-    """
-    Add a new line before the END:VCARD statement.
-
-    Args:
-        vcard_content (str): The vCard content as text.
-        line (str): The line to add before END:VCARD.
-
-    Returns:
-        str: The modified vCard content.
-    """
-    if not vcard_content.strip().endswith("END:VCARD"):
-        raise ValueError("Invalid vCard format: missing END:VCARD")
-    
-    return vcard_content.replace("END:VCARD", f"{line}\nEND:VCARD")
+        return get_local_files_from_inputs(inputs, file_is_vcard)

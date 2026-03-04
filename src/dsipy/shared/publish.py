@@ -4,6 +4,7 @@ import boto3
 import base64
 import requests
 
+
 class FeedProvider(ABC):
     """Base class for feed publishing providers."""
 
@@ -52,6 +53,7 @@ class GitHubProvider(FeedProvider):
         resp.raise_for_status()
         return resp.json()
 
+
 class S3Provider(FeedProvider):
     def __init__(self, bucket: str, prefix: str = "", region: str = None):
         self.bucket = bucket
@@ -83,14 +85,14 @@ class S3Provider(FeedProvider):
 
 def get_publisher(provider_type: str, **kwargs) -> FeedProvider:
     """Factory function to get the appropriate feed publisher provider.
-    
+
     Args:
         provider_type: Type of provider ('github' or 's3')
         **kwargs: Provider-specific arguments
-        
+
     Returns:
         FeedProvider instance
-        
+
     Raises:
         ValueError: If provider_type is not supported
     """
@@ -100,13 +102,13 @@ def get_publisher(provider_type: str, **kwargs) -> FeedProvider:
             owner=kwargs["owner"],
             repo=kwargs["repo"],
             branch=kwargs["branch"],
-            token=kwargs["token"]
+            token=kwargs["token"],
         )
     elif provider_type == "s3":
         return S3Provider(
             bucket=kwargs["bucket"],
             prefix=kwargs.get("prefix", ""),
-            region=kwargs.get("region")
+            region=kwargs.get("region"),
         )
     else:
         raise ValueError(f"Unknown provider type: {provider_type}")

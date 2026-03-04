@@ -1,12 +1,49 @@
 import os
 import datetime
 import markdown
+from pathlib import Path
+from ....shared.utils import slugify
 import typer
-from .feed import generate_rss
+
+
+def get_feed_class(format):
+    if format == "markdown":
+        return MarkdownFeed
+    else:
+        raise ValueError(f"Unsupported feed format: {format}")
 
 
 class MarkdownFeed:
-    def _parse_file(path):
+    def _parse_frontmatter(lines: list) -> tuple[dict, list]:
+        """
+        Extract frontmatter and content lines from markdown file lines.
+        Parses YAML-like front matter delimited by --- markers.
+        Supports any attributes in the format "key: value".
+        Args:
+            lines (list): List of lines from the markdown file.
+        Returns:
+            tuple: (frontmatter_dict, content_lines_list)
+        """
+        frontmatter = {}
+        content_lines = []
+
+        # Detect front matter
+        if lines and lines[0].strip() == "---":
+            i = 1
+            while i < len(lines) and lines[i].strip() != "---":
+                line = lines[i].strip()
+                # Parse any "key: value" format
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    frontmatter[key.strip()] = value.strip()
+                i += 1
+            content_lines = lines[i + 1 :]
+        else:
+            content_lines = lines
+
+        return frontmatter, content_lines
+
+    def _parse_file(path: Path) -> dict:
         """
         Extract metadata and content from a markdown file.
         Supports simple YAML-like front matter:
@@ -14,54 +51,72 @@ class MarkdownFeed:
         title: My Post
         date: 2025-01-01
         link: https://example.com/my-post
+        image: https://example.com/image.jpg
+        use_html_content: true
+        other_metadata_key: value
         ---
+
+        This is the body of the state.
+        
+        In the front matter, the canonical attributes are:
+            - title: The title of the feed item.
+            - date: The publication date of the feed item in ISO format (e.g., YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).
+            - link: An optional URL associated with the feed item.
+            - image: An optional URL to an image associated with the feed item.
+        
+        title and date are required for feed generation, but if they are missing, we will use fallbacks:
+            - title: the filename without extension
+            - date: the file's last modified time
+        
+        You can include any additional metadata as key-value pairs in the frontmatter, and they will be included in the output dictionary under the "metadata" key. This allows for extensibility and custom metadata fields as needed.
+
+        The `use_html_content` attribute in the frontmatter can be set to "true" or "yes" to indicate that the content should be rendered as HTML. The raw content will be processed with the markdown library to convert it to HTML. If `use_html_content` is not set or is false, the content will be treated as plain text.
+
+        Args:
+            path (Path): Path to the markdown file.
+        Returns:
+            dict: A dictionary containing the extracted metadata and content.
         """
-        content_lines = []
-
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-
-        frontmatter = {}
-        # Detect front matter
-        if lines and lines[0].strip() == "---":
-            i = 1
-            while i < len(lines) and lines[i].strip() != "---":
-                line = lines[i].strip()
-
-                fields = ["title", "date", "link"]
-
-                for field in fields:
-                    prefix = f"{field}:"
-                    if line.startswith(prefix):
-                        frontmatter[field] = line.replace(prefix, "").strip()
-                i += 1
-            content_lines = lines[i + 1 :]
-        else:
-            content_lines = lines
+        
+        lines = path.read_text(encoding="utf-8").splitlines()
+        metadata, content_lines = MarkdownFeed._parse_frontmatter(lines)
 
         # Fallback title
-        if not frontmatter.get("title"):
-            frontmatter["title"] = os.path.splitext(os.path.basename(path))[0]
+        if not metadata.get("title"):
+            metadata["title"] = os.path.splitext(os.path.basename(path))[0]
 
         # Fallback date (file modified time)
-        if not frontmatter.get("date"):
+        if not metadata.get("date"):
             ts = os.path.getmtime(path)
-            frontmatter["date"] = datetime.datetime.fromtimestamp(ts).strftime(
-                "%Y-%m-%d"
+            metadata["date"] = datetime.datetime.fromtimestamp(ts).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
             )
 
-        html_content = markdown.markdown("".join(content_lines))
+        metadata["file_path"] = str(path)
+        metadata["file_name"] = os.path.basename(path)
+        metadata["file_dir"] = os.path.dirname(path)
+        metadata["file_ext"] = os.path.splitext(path)[1]
+
+        raw_content = "\n".join(content_lines)
+        content = raw_content
+
+        use_html_content = metadata.get("use_html_content", "false").lower() in ["true", "yes"]
+        if use_html_content:
+            content = markdown.markdown(raw_content, extensions=['extra'])
 
         return {
-            "title": frontmatter["title"],
+            "id": metadata.get("id") or slugify(str(metadata["file_path"])),
+            "title": metadata["title"],
             "date": (
-                datetime.datetime.strptime(frontmatter["date"], "%Y-%m-%dT%H:%M:%SZ")
-                if "T" in frontmatter["date"]
-                else datetime.datetime.strptime(frontmatter["date"], "%Y-%m-%d")
+                datetime.datetime.strptime(metadata["date"], "%Y-%m-%dT%H:%M:%SZ")
+                if "T" in metadata["date"]
+                else datetime.datetime.strptime(metadata["date"], "%Y-%m-%d")
             ),
-            "link": frontmatter.get("link", None),
-            "content": html_content,
-            "path": path,
+            "link": metadata.get("link", None),
+            "image": metadata.get("image", None),
+            "content": content,
+            "content_type": "html" if use_html_content else "text",
+            "metadata": metadata
         }
 
     def _create_state_content(title: str, message: str, date: str | None = None):
@@ -82,7 +137,7 @@ class MarkdownFeed:
             f"{key}: {value}" for key, value in attributes.items() if value
         )
 
-        file_content = f"""---
+        return f"""---
 {front_matter}
 ---
 {message}
@@ -103,7 +158,7 @@ class MarkdownFeed:
 
     def collect(directory: str):
         md_files = [
-            os.path.join(root, f)
+            Path(root) / f
             for root, _, files in os.walk(directory)
             for f in files
             if f.endswith(".md")
@@ -113,26 +168,3 @@ class MarkdownFeed:
         states.sort(key=lambda x: x["date"], reverse=True)
 
         return states
-
-    def build(
-        states: list,
-        title: str,
-        link: str,
-        description: str,
-        author: str,
-        email: str,
-        language: str,
-        output: str,
-        sign: dict | None = None,
-    ):
-        author_data = {"name": author, "email": email}
-        build_date = datetime.datetime.now()
-
-        rss_xml = generate_rss(
-            title, link, description, author_data, language, build_date, states, sign
-        )
-
-        print(f"Output file: {output}")
-
-        with open(output, "w") as f:
-            f.write(rss_xml)
